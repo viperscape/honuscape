@@ -8,6 +8,7 @@ Clone this repo and (run)
 
 ## Examples
 
+```clojure
 ;;load in a mesh and prep the geometry for drawarray use
 
  (let [mesh (honuscape.collada/prep-geoms
@@ -45,6 +46,7 @@ Clone this repo and (run)
 	;;set the view uniform)
 
 ;;remember, let the shader handle the primary matrix calculations per vertex
+```
 
 ### Bugs
 
