@@ -1,6 +1,8 @@
 (ns honuscape.core
   (:require [clojure.pprint :as pprint]
-            [honuscape.collada])
+            [honuscape.collada]
+            [honuscape.window]
+            [clojure.tools.nrepl :as nrepl])
   (:import (java.nio ByteBuffer FloatBuffer)
            (org.lwjgl BufferUtils)
            (org.lwjgl.input Keyboard)
@@ -12,10 +14,69 @@
   (:use clojure.core.matrix.operators)
   (:gen-class))
 
-(declare globals lookat projection inv translate rotate-by)
+(declare server globals lookat projection perspective inv translate translate-left rotate-by rotate-by-left)
+
+
+(use '[clojure.tools.nrepl.server :only (start-server stop-server)])
+(defonce server (start-server :port 7888))
+
+(defonce fns (ref [])) ;;fns to be eval
+(defn glfn [fun]
+  "adds the fn to the list of fn's which get eval 
+  during opengl runtime in the opengl thread"
+  (dosync (ref-set fns (conj @fns fun))))
+(defn do-glfn []
+  (try 
+    (do (map eval @fns) (dosync (ref-set fns [])))
+    (catch Exception e (str "My Exception: " (.getMessage e)))))
 
 
 
+(defn build-vao [mesh]
+  (prn "building vao")
+  (let [vertices (float-array
+                   (flatten (for [n mesh] 
+                    (:va (val n)))))
+        vertices-buffer (-> (BufferUtils/createFloatBuffer (count vertices))
+                            (.put vertices)
+                            (.flip))
+
+        normals (float-array
+                   (flatten (for [n mesh] 
+                    (:na (val n)))))
+        normals-buffer (-> (BufferUtils/createFloatBuffer (count normals))
+                            (.put normals)
+                            (.flip))
+
+        indices-count (count vertices); (count indices)
+
+        ;; create & bind Vertex Array Object
+        vao (GL30/glGenVertexArrays)
+        _ (GL30/glBindVertexArray vao)
+        ;; create & bind Vertex Buffer Object for vertices
+        vbo (GL15/glGenBuffers)
+        _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER vbo)
+        _ (GL15/glBufferData GL15/GL_ARRAY_BUFFER vertices-buffer GL15/GL_STATIC_DRAW)
+        _ (GL20/glVertexAttribPointer 0 3 GL11/GL_FLOAT false 0 0)
+        _ (GL20/glEnableVertexAttribArray 0)
+       ; _ (GL20/glVertexAttribPointer 1  3 GL11/GL_FLOAT false 0 0)
+        _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER 0)
+
+        ;;todo: do this properly! should compact and bind once  
+        vbo-na (GL15/glGenBuffers)
+        _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER vbo-na)
+        _ (GL15/glBufferData GL15/GL_ARRAY_BUFFER normals-buffer GL15/GL_STATIC_DRAW)
+        _ (GL20/glVertexAttribPointer 1 3 GL11/GL_FLOAT false 0 0)
+        _ (GL20/glEnableVertexAttribArray 1)
+        _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER 0)
+
+        
+        ;; deselect the VAO
+        _ (GL30/glBindVertexArray 0)
+
+        _ (println "build-vao errors?" (GL11/glGetError))]
+        [vao indices-count]
+))
 
 (defn init-window
   [width height title]
@@ -44,92 +105,19 @@
     (Display/setTitle title)
     (Display/create pixel-format context-attributes)))
 
-(def cube-v '[-1.0, -1.0, 1.0,
-            1.0, -1.0, 1.0,
-            1.0, 1.0, 1.0,
-            -1.0, 1.0, 1.0,
-            
-            -1.0, -1.0, -1.0,
-            -1.0, 1.0, -1.0,
-            1.0, 1.0, -1.0,
-            1.0, -1.0, -1.0,
-            
-            -1.0, 1.0, -1.0,
-            -1.0, 1.0, 1.0,
-            1.0, 1.0, 1.0,
-            1.0, 1.0, -1.0,
-            
-            -1.0, -1.0, -1.0,
-            1.0, -1.0, -1.0,
-            1.0, -1.0, 1.0,
-            -1.0, -1.0, 1.0,
-            
-            1.0, -1.0, -1.0,
-            1.0, 1.0, -1.0,
-            1.0, 1.0, 1.0,
-            1.0, -1.0, 1.0,
-            
-            -1.0, -1.0, -1.0,
-            -1.0, -1.0, 1.0,
-            -1.0, 1.0, 1.0,
-            -1.0, 1.0, -1.0])
-(def cube-n '[-1 0 0
-                -1 0 0
-                -1 0 0
-                -1 0 0
-                1 0 0
-                1 0 0
-                1 0 0
-                1 0 0
-                0 -1 0
-                0 -1 0
-                0 -1 0
-                0 -1 0
-                0 1 0
-                0 1 0
-                0 1 0
-                0 1 0
-                0 0 -1
-                0 0 -1
-                0 0 -1
-                0 0 -1
-                0 0 1
-                0 0 1
-                0 0 1
-                0 0 1])
-(def cube-tri (vec '[0 1 3, 0 3 2, 4 5 7
-                4 7 6
-                8 9 11
-                8 11 10
-                12 13 15
-                12 15 14
-                16 17 19
-                16 19 18
-                20 21 23
-                20 23 22]))
-
-;(honuscape.collada/map-to cube-tri cube-v)
-
-
 (defn init-buffers
   []
   (let [mesh (honuscape.collada/prep-geoms
               (honuscape.collada/load-model "C:\\users\\chris\\honuscape\\resources\\radar2b.dae"))
-        ;(honuscape.obj/load-model "C:\\Users\\Chris\\honuscape\\resources\\cube.obj")
-        ;i (map #(first %) (partition 2 (mesh :p)))
-        ;v (partition 3 (mesh :v))
-        ;verts  (for [vert (map #(nth v %) i)]
-        ;         [(first vert) (last vert) (* -1 (second vert))]) ;;prep coord to left-hand
         vertices (float-array
-                   ;(flatten(map #(rseq (apply vector %)) (apply vector (partition 3 3 [] cube-v)))));
-                   (flatten (for [n mesh] ;(map #(rseq %) 
+                   (flatten (for [n mesh] 
                     (:va (val n)))))
         vertices-buffer (-> (BufferUtils/createFloatBuffer (count vertices))
                             (.put vertices)
                             (.flip))
 
         normals (float-array
-                   (flatten (for [n mesh] ;(map #(rseq %) 
+                   (flatten (for [n mesh] 
                     (:na (val n)))))
         normals-buffer (-> (BufferUtils/createFloatBuffer (count normals))
                             (.put normals)
@@ -167,15 +155,10 @@
                      (assoc @globals
                        :vao-id vao-id
                        :vbo-id vbo-id
-        ;               :vboc-id vboc-id
-                    ;   :vboi-id vboi-id
                        :indices-count indices-count
   )))))
 
 
-;;layout (location = 1) in vec3 in_Normal;\n
-;;uniform mat4 gl_ModelViewMatrix;\n
-;;uniform mat4 gl_ProjectionMatrix;\n
 (def vs-shader
   (str "#version 400
  
@@ -237,7 +220,7 @@ void main(void)
         ]
     shader-id))
 
-;;        ;angle-loc (GL20/glGetUniformLocation p-id "in_Angle")
+
 (defn init-shaders
   []
   (let [vs-id (load-shader vs-shader GL20/GL_VERTEX_SHADER)
@@ -245,17 +228,13 @@ void main(void)
         p-id (GL20/glCreateProgram)
         _ (GL20/glAttachShader p-id vs-id)
         _ (GL20/glAttachShader p-id fs-id)
-        ;_ (GL20/glBindAttribLocation p-id 0 "in_Position")
-        ;_ (GL20/glBindAttribLocation p-id 1 "in_Normal")
-       ; _ (println "init-shaders binding errors?" (GL11/glGetError))
+
         _ (GL20/glLinkProgram p-id)
-       ; _ (println "init-shaders linking errors?" (GL11/glGetError))
 
         _ (println "link status? " (GL20/glGetProgram p-id GL20/GL_LINK_STATUS))
         _ (GL20/glUseProgram p-id)
         _ (println "init-shaders use errors?" (GL11/glGetError))
         angle-loc (GL20/glGetUniformLocation p-id "angle")
-       ;; _ (GL20/glUniform1f angle-loc 22.0)
         _ (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "projection") false 
            (let [f (float-array (to-double-array (:projection @globals)))] ;float-array, flatten
             (-> (BufferUtils/createFloatBuffer (count f))
@@ -298,7 +277,6 @@ void main(void)
       (assoc @globals 
         :projection (let [halfw 1.0
           halfh (float (/ halfw (/ width height)))]
-          ;(projection -1 1 -1 1 0.01 10000.0)) ;(inv halfw) halfw (inv halfh) halfh
           (perspective 45 (float (/ width height)) 0.1 1000.0))
         :view (lookat [0 22 -5] [0.2 5 8] [0 1 0]) ;(translate [0 0 -5]);
         :model (transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))
@@ -330,21 +308,10 @@ void main(void)
 
     (GL20/glUseProgram p-id)
     (GL20/glUniform1f angle-loc angle)
-    ;(GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "view") false 
-    ;       (let [f (float-array (to-double-array (:view @globals)))] 
-    ;        (-> (BufferUtils/createFloatBuffer (count f))
-    ;                        (.put f)
-    ;                        (.flip))))
 
     (GL30/glBindVertexArray vao-id)
-    ;(GL20/glVertexAttrib3f 0, 1.0, 0.0, 0.0)
     (GL11/glDrawArrays GL11/GL_TRIANGLES 0 indices-count)
-   ; (GL20/glEnableVertexAttribArray 0)
-   ; (GL20/glEnableVertexAttribArray 1)
-  ;; Put everything back to default (deselect)
-   ; (GL15/glBindBuffer GL15/GL_ELEMENT_ARRAY_BUFFER 0)
-   ; (GL20/glDisableVertexAttribArray 0)
-   ; (GL20/glDisableVertexAttribArray 1)
+
     (GL30/glBindVertexArray 0)
     (GL20/glUseProgram 0)
     ;(println "draw errors?" (GL11/glGetError))
@@ -364,18 +331,13 @@ void main(void)
                      (assoc @globals
                        :angle next-angle
                        :last-time cur-time
-                       ;:view ;(* (lookat [0 0 -5] [0.2 0 0] [0 1 0])
-                         ; (* (rotate-by next-angle :z) (:view @globals)) 
                           )))
-    ;(println delta-time)
+
     (do (Keyboard/next) 
         (if (Keyboard/getEventKeyState) ;;geteventkey sticks around
           (if (= (Keyboard/getEventKey) Keyboard/KEY_UP) ;;pressing up?
                 (do (prn "pressing up")
                   (prn angle)))))
-
-
-
   (draw)))
 
 (defn destroy-gl
@@ -406,20 +368,24 @@ void main(void)
     (GL30/glDeleteVertexArrays vao-id)
     ))
 
+
+
+(defn destroy [] 
+  (destroy-gl)
+  (Display/destroy))
+
 (defn run
   []
   (init-window 800 600 "LWJGL")
   (init-gl)
   (while (not (Display/isCloseRequested))
+    ;(do-glfn)
     (update)
     (Display/update)
     (Display/sync 60))
   (destroy-gl)
   (Display/destroy))
 
-(defn destroy [] 
-  (destroy-gl)
-  (Display/destroy))
 
 (defn -main
   "I don't do a whole lot ... yet."

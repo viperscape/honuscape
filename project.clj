@@ -27,7 +27,8 @@
                  [org.lwjgl.lwjgl/lwjgl-platform "2.8.5"
                   :classifier ~(lwjgl-classifier)
                   :native-prefix ""]
-                  [net.mikera/core.matrix "0.11.0"]]
+                  [net.mikera/core.matrix "0.11.0"]
+                  [org.clojure/tools.nrepl "0.2.3"]]
   :main honuscape.core)
 
 
