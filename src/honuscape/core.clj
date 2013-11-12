@@ -1,7 +1,6 @@
 (ns honuscape.core
   (:require [clojure.pprint :as pprint]
             [honuscape.collada]
-            [honuscape.window]
             [clojure.tools.nrepl :as nrepl])
   (:import (java.nio ByteBuffer FloatBuffer)
            (org.lwjgl BufferUtils)
@@ -15,7 +14,7 @@
   (:gen-class))
 
 (declare server globals lookat projection perspective inv translate translate-left rotate-by rotate-by-left)
-
+(defonce entities (ref [])) ;;will store vao info for accessing during draw state
 
 (use '[clojure.tools.nrepl.server :only (start-server stop-server)])
 (defonce server (start-server :port 7888))
@@ -23,16 +22,21 @@
 (defonce fns (ref [])) ;;fns to be eval
 (defn glfn [fun]
   "adds the fn to the list of fn's which get eval 
-  during opengl runtime in the opengl thread"
+  during opengl runtime in the opengl thread, quote the fn"
   (dosync (ref-set fns (conj @fns fun))))
+
 (defn do-glfn []
-  (try 
-    (do (map eval @fns) (dosync (ref-set fns [])))
-    (catch Exception e (str "My Exception: " (.getMessage e)))))
+  "gets called repeatedly during update loop, 
+  gives gl context outside of thread; see glfn"
+  (if-not (empty? @fns)
+    (try 
+     (doall (prn (map eval @fns)) (dosync (ref-set fns [])))
+     (catch Exception e (str "My Exception: " (.getMessage e))))
+    ))
 
 
 
-(defn build-vao [mesh]
+(defn build-vao! [mesh]
   (prn "building vao")
   (let [vertices (float-array
                    (flatten (for [n mesh] 
@@ -63,8 +67,8 @@
         _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER 0)
 
         ;;todo: do this properly! should compact and bind once  
-        vbo-na (GL15/glGenBuffers)
-        _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER vbo-na)
+        vbo-norms (GL15/glGenBuffers)
+        _ (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER vbo-norms)
         _ (GL15/glBufferData GL15/GL_ARRAY_BUFFER normals-buffer GL15/GL_STATIC_DRAW)
         _ (GL20/glVertexAttribPointer 1 3 GL11/GL_FLOAT false 0 0)
         _ (GL20/glEnableVertexAttribArray 1)
@@ -75,8 +79,18 @@
         _ (GL30/glBindVertexArray 0)
 
         _ (println "build-vao errors?" (GL11/glGetError))]
-        [vao indices-count]
+        {:vao vao, :indices-count indices-count, :vbo vbo, :vbo-norms vbo-norms}
 ))
+
+(defn add-entity-mesh [mf transform]
+  "todo: get mesh to load in another thread and not block what's calling this function"
+  (let [mesh (deref (future (honuscape.collada/load-model mf))) ;;i block
+        name (:name mesh)] 
+    (dosync (alter entities conj
+    (assoc 
+      (build-vao!(honuscape.collada/prep-geoms mesh))
+      :model transform ;(transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))
+      :name name)))))
 
 (defn init-window
   [width height title]
@@ -91,11 +105,11 @@
                        :angle 0.0
                        :last-time current-time-millis
                        ;; geom ids
-                       :vao-id 0
-                       :vbo-id 0
-                       :vboc-id 0
-                       :vboi-id 0
-                       :indices-count 0
+                       ;:vao-id 0
+                       ;:vbo-id 0
+                       ;:vboc-id 0
+                       ;:vboi-id 0
+                       ;:indices-count 0
                        ;; shader program ids
                        :vs-id 0
                        :fs-id 0
@@ -245,11 +259,11 @@ void main(void)
             (-> (BufferUtils/createFloatBuffer (count f))
                             (.put f)
                             (.flip))))
-        _ (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "model") true 
-           (let [f (float-array (to-double-array (:model @globals)))] 
-            (-> (BufferUtils/createFloatBuffer (count f))
-                            (.put f)
-                            (.flip))))
+       ; _ (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "model") true 
+       ;    (let [f (float-array (to-double-array (:model @globals)))] 
+       ;     (-> (BufferUtils/createFloatBuffer (count f))
+       ;                     (.put f)
+       ;                     (.flip))))
         ]
     (dosync (ref-set globals
                      (assoc @globals
@@ -279,41 +293,53 @@ void main(void)
           halfh (float (/ halfw (/ width height)))]
           (perspective 45 (float (/ width height)) 0.1 1000.0))
         :view (lookat [0 22 -5] [0.2 5 8] [0 1 0]) ;(translate [0 0 -5]);
-        :model (transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))
+        ;:model (transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))
         )))
 
-    (init-buffers)
+    ;(init-buffers)
     (init-shaders))
+    (GL20/glUseProgram (@globals :p-id))
 
-    (let [lbuff (float-array '(0.2 0.2 0.2 1.0))]
-     (dosync (ref-set globals
-      (assoc @globals :mylight 
-        (-> (BufferUtils/createFloatBuffer (count lbuff))
-            (.put lbuff)
-            (.flip))))))
+  ;  (let [lbuff (float-array '(0.2 0.2 0.2 1.0))]
+  ;   (dosync (ref-set globals
+  ;    (assoc @globals :mylight 
+  ;      (-> (BufferUtils/createFloatBuffer (count lbuff))
+  ;          (.put lbuff)
+  ;          (.flip))))))
+
+    ;;example to load a mesh
+    (add-entity-mesh "C:\\users\\chris\\honuscape\\resources\\cube.dae", (transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z)))
     )
 
-(defn draw
-  []
-  (let [{:keys [width height angle angle-loc
-                p-id vao-id ;vboi-id
-                indices-count indices
-                mylight mylight]} @globals
-                w2 (/ width 2.0)
-                h2 (/ height 2.0)]
+(defn draw []
+  (let [{:keys [;width height 
+                angle angle-loc
+                p-id ;vao-id ;vboi-id
+                ;indices-count indices
+                ;mylight mylight
+                ]} @globals
+                ;w2 (/ width 2.0)
+                ;h2 (/ height 2.0)
+                ]
     (GL11/glClear (bit-or GL11/GL_COLOR_BUFFER_BIT  GL11/GL_DEPTH_BUFFER_BIT))
 
     (GL11/glEnable GL11/GL_CULL_FACE)
     (GL11/glEnable GL11/GL_DEPTH_TEST)
 
-    (GL20/glUseProgram p-id)
+    ;(GL20/glUseProgram p-id)
     (GL20/glUniform1f angle-loc angle)
 
-    (GL30/glBindVertexArray vao-id)
-    (GL11/glDrawArrays GL11/GL_TRIANGLES 0 indices-count)
-
-    (GL30/glBindVertexArray 0)
-    (GL20/glUseProgram 0)
+    (doseq [n @entities]
+      (GL30/glBindVertexArray (n :vao))
+      (GL11/glDrawArrays GL11/GL_TRIANGLES 0 (n :indices-count))
+      (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "model") true 
+           (let [f (float-array (to-double-array (n :model)))] 
+            (-> (BufferUtils/createFloatBuffer (count f))
+                            (.put f)
+                            (.flip))))
+      (GL30/glBindVertexArray 0))
+    
+    ;(GL20/glUseProgram 0)
     ;(println "draw errors?" (GL11/glGetError))
     ))
 
@@ -338,10 +364,11 @@ void main(void)
           (if (= (Keyboard/getEventKey) Keyboard/KEY_UP) ;;pressing up?
                 (do (prn "pressing up")
                   (prn angle)))))
-  (draw)))
+  (draw))
+  (do-glfn))
 
-(defn destroy-gl
-  []
+
+(defn destroy-gl []
   (let [{:keys [p-id vs-id fs-id vao-id vbo-id vboc-id vboi-id]} @globals]
     ;; Delete the shaders
     (GL20/glUseProgram 0)
@@ -352,20 +379,21 @@ void main(void)
     (GL20/glDeleteShader fs-id)
     (GL20/glDeleteProgram p-id)
 
-    ;; Select the VAO
-    (GL30/glBindVertexArray vao-id)
+    (doseq [n @entities]
+      (GL30/glBindVertexArray (n :vao))
 
-    ;; Disable the VBO index from the VAO attributes list
-    (GL20/glDisableVertexAttribArray 0)
-   ; (GL20/glDisableVertexAttribArray 1)
+      ;; Disable the VAO attributes list
+      (GL20/glDisableVertexAttribArray 0) ;verts
+      (GL20/glDisableVertexAttribArray 1) ;norms
 
-    ;; Delete the vertex VBO
-    (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER 0)
-    (GL15/glDeleteBuffers vbo-id)
+      ;; Delete the VBO
+      (GL15/glBindBuffer GL15/GL_ARRAY_BUFFER 0)
+      (GL15/glDeleteBuffers (n :vbo))
+      (GL15/glDeleteBuffers (n :vbo-norms))
 
-    ;; Delete the VAO
-    (GL30/glBindVertexArray 0)
-    (GL30/glDeleteVertexArrays vao-id)
+      ;; Delete the VAO
+      (GL30/glBindVertexArray 0)
+      (GL30/glDeleteVertexArrays (n :vao)))
     ))
 
 
@@ -379,8 +407,7 @@ void main(void)
   (init-window 800 600 "LWJGL")
   (init-gl)
   (while (not (Display/isCloseRequested))
-    ;(do-glfn)
-    (update)
+    (#'update)
     (Display/update)
     (Display/sync 60))
   (destroy-gl)
