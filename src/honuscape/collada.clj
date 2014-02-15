@@ -17,9 +17,9 @@
   (vec (map #((if (some #{:int} ntype) (fn [x] (Integer. x)) (fn [x] (Float. x))) %) (clojure.string/split s #" "))))
 
 
-(defn load-model [& filename]
+(defn load-model [filename]
 (let
-  [dae (xml/parse (java.io.ByteArrayInputStream. (.getBytes (slurp (apply str filename)))))
+  [dae (xml/parse (java.io.ByteArrayInputStream. (.getBytes (slurp filename))))
 
   zdae (zip/xml-zip dae)
 
@@ -29,7 +29,7 @@
   materials (xml-> zdae :library_materials)
   animations (xml-> zdae :library_animations)
 
-  meshname (apply str (clojure.string/split (apply str (last (clojure.string/split (apply str filename) #"\\"))) #".dae"))
+  meshname filename;;(apply str (clojure.string/split (last (clojure.string/split (apply str filename) #"/")) #".dae"))
 
  semantics (into {}  (let [l (first (xml-> zdae :library_geometries))]
     (for [m (xml-> l :geometry)] ;for each geom mesh
@@ -54,7 +54,7 @@
             )))))))}
      ))
 
-   _ (prn semantics)
+   ;_ (prn semantics)
 
 
 ; (let [l (first (xml-> zdae :library_geometries))]
@@ -203,7 +203,6 @@
 ;      i (m :pi)]
 ;
 ;   (vec (flatten (map #(nth v %) i))))
-
 
 
 
