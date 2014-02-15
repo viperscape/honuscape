@@ -1,20 +1,24 @@
 (ns honuscape.core
   (:require [clojure.pprint :as pprint]
             [honuscape.collada]
-            [clojure.tools.nrepl :as nrepl])
+            [clojure.tools.nrepl :as nrepl]
+            [clojure.core.async :as async :refer [go <! <!! >! >!! timeout alts!!]]
+            [clojure.core.matrix :as matrix :refer [mset identity-matrix]])
   (:import (java.nio ByteBuffer FloatBuffer)
            (org.lwjgl BufferUtils)
            (org.lwjgl.input Keyboard)
            (org.lwjgl.opengl ContextAttribs Display DisplayMode GL11 GL12 GL15 GL20 GL30 PixelFormat)
            (org.lwjgl.util.glu GLU Project)
            (java.lang Math))
-  (:refer-clojure :exclude [* - + == /])
-  (:use clojure.core.matrix)
-  (:use clojure.core.matrix.operators)
+  ;(:refer-clojure :exclude [* - + == /])
+  ;(:use clojure.core.matrix)
+  ;(:use clojure.core.matrix.operators)
+  
   (:gen-class))
 
 (declare server globals lookat projection perspective inv translate translate-left rotate-by rotate-by-left)
 (defonce entities (ref [])) ;;will store vao info for accessing during draw state
+(defonce assets (ref {})) ;;holds asset mesh data
 
 (use '[clojure.tools.nrepl.server :only (start-server stop-server)])
 (defonce server (start-server :port 7888))
@@ -29,9 +33,10 @@
   "gets called repeatedly during update loop, 
   gives gl context outside of thread; see glfn"
   (if-not (empty? @fns)
+
     (try 
      (doall (prn (map eval @fns)) (dosync (ref-set fns [])))
-     (catch Exception e (str "My Exception: " (.getMessage e))))
+     (catch Exception e (str "exception: " (.getMessage e)) ))
     ))
 
 
@@ -82,15 +87,60 @@
         {:vao vao, :indices-count indices-count, :vbo vbo, :vbo-norms vbo-norms}
 ))
 
-(defn add-entity-mesh [mf transform]
-  "todo: get mesh to load in another thread and not block what's calling this function"
-  (let [mesh (deref (future (honuscape.collada/load-model mf))) ;;i block
-        name (:name mesh)] 
-    (dosync (alter entities conj
-    (assoc 
-      (build-vao!(honuscape.collada/prep-geoms mesh))
-      :model transform ;(transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))
-      :name name)))))
+
+
+(defn clear-assets! [] (dosync (ref-set assets {})))
+(defn clear-entities! [] (dosync (ref-set entities {})))
+
+(defn load-asset [a] ;;blocking
+  (let [mesh (honuscape.collada/load-model a)]
+    (Thread/sleep 250);;just a simulation here
+    mesh))
+
+
+(defn add-asset! [a] ;;blocks
+  "adds assets, which eventually update asset ref
+  when realized: returns the newly loaded asset name"
+  (let [m (load-asset a)
+        mn (:name m)]
+      (dosync (alter assets conj {mn m}))
+      mn))
+
+(defn add-entity-mesh! [m transform]
+  (if-let [mesh (get @assets m)]
+    (dosync (alter entities conj 
+      (merge (build-vao!(honuscape.collada/prep-geoms mesh))
+      {:model transform ;(transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))
+      :name (:name mesh)} )))
+  {:error "cannot get mesh"}))
+
+(def c (async/chan))
+
+(defn peek! [ch]
+  "quickly looks at a channel for new incoming data, pulls it if it exists, quits otherwise;"
+  (let [[m ch] (alts!! [c (timeout 1)])] m))
+
+(defn drain-alt! [ch mbuff]
+  (remove nil? (repeatedly mbuff #(peek! ch))))
+
+(defn drain! ([ch] (drain! ch nil)) ([ch mbuff] 
+  "drains a channel with peek!, optionally specify max buffer size to quit draining at"
+  (loop [m (peek! ch)
+       ml []
+       n (or mbuff 2)]
+       (if-not m 
+         ml
+         (if-not (> n 1)
+          (conj ml m)
+          (recur (peek! ch), (conj ml m), (if mbuff (dec n) n)) )))))
+
+;(def cf (future (>!! c (add-asset! "resources/cone.dae"))))
+
+(defn async-add-ent []
+  (if-let [mesh 
+          (doall (let [[m ch] (async/alts!! [c (async/timeout 1)])] m))] 
+    (do (println "adding entity! " (str mesh))
+    (add-entity-mesh! mesh (matrix/transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z))))))
 
 (defn init-window
   [width height title]
@@ -250,12 +300,12 @@ void main(void)
         _ (println "init-shaders use errors?" (GL11/glGetError))
         angle-loc (GL20/glGetUniformLocation p-id "angle")
         _ (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "projection") false 
-           (let [f (float-array (to-double-array (:projection @globals)))] ;float-array, flatten
+           (let [f (float-array (matrix/to-double-array (:projection @globals)))] ;float-array, flatten
             (-> (BufferUtils/createFloatBuffer (count f))
                             (.put f)
                             (.flip))))
         _ (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "view") true 
-           (let [f (float-array (to-double-array (:view @globals)))] 
+           (let [f (float-array (matrix/to-double-array (:view @globals)))] 
             (-> (BufferUtils/createFloatBuffer (count f))
                             (.put f)
                             (.flip))))
@@ -308,7 +358,7 @@ void main(void)
   ;          (.flip))))))
 
     ;;example to load a mesh
-    (add-entity-mesh "C:\\users\\chris\\honuscape\\resources\\cube.dae", (transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z)))
+    (add-entity-mesh! "resources/cube.dae", (matrix/transform (translate-left [0.2 5 8]) (rotate-by-left 45 :z)))
     )
 
 (defn draw []
@@ -333,7 +383,7 @@ void main(void)
       (GL30/glBindVertexArray (n :vao))
       (GL11/glDrawArrays GL11/GL_TRIANGLES 0 (n :indices-count))
       (GL20/glUniformMatrix4 (GL20/glGetUniformLocation p-id "model") true 
-           (let [f (float-array (to-double-array (n :model)))] 
+           (let [f (float-array (matrix/to-double-array (n :model)))] 
             (-> (BufferUtils/createFloatBuffer (count f))
                             (.put f)
                             (.flip))))
@@ -365,7 +415,8 @@ void main(void)
                 (do (prn "pressing up")
                   (prn angle)))))
   (draw))
-  (do-glfn))
+  (do-glfn)
+  (async-add-ent))
 
 
 (defn destroy-gl []
@@ -517,10 +568,10 @@ void main(void)
 (defn lookat [eye dir up]
   "performs lookat matrix operation, takes 3 vectors of size 3
   TODO: prep this properly for right-hand openGL friendly matrix, and run GL_FALSE instead"
- (let [f (normalise (- dir eye))
-      s (normalise (cross up f))
-      u (cross f s)
-      mo (identity-matrix 4)
+ (let [f (matrix/normalise (matrix/sub dir eye))
+      s (matrix/normalise (matrix/cross up f))
+      u (matrix/cross f s)
+      mo (matrix/identity-matrix 4)
        mo (mset mo 0 0 (first s))
         mo (mset mo 1 0 (second s))
         mo (mset mo 2 0 (last s))
@@ -533,5 +584,5 @@ void main(void)
         mo (mset mo 1 2 (inv (second f)))
         mo (mset mo 2 2 (inv (last f)))]
 
-       (transform mo (translate-left [(inv (first eye)) (inv (second eye)) (inv (last eye))]))
+       (matrix/transform mo (translate-left [(inv (first eye)) (inv (second eye)) (inv (last eye))]))
       ))
