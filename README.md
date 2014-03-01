@@ -47,21 +47,25 @@ Caution: this may take a minute to start up the first time
 	;;set the view uniform)
 
 ;;remember, let the shader handle the primary matrix calculations per vertex, if possible
+
+
+;;a convenience method for loading and setting collada
+(add-asset! "resources/cone.dae")
 ```
 
 ### Bugs
 
-yes, and total lack of proper functional style, some nasty looking code, and basic but modern openGL usage with shaders and vaos.
+Yes. Also, beware: lack of proper functional style, some nasty looking code and temporarily using globals; however I have basic but modern openGL usage with shaders and vaos.
 
 ### Future
 
-This implementation is to grow and eventually include generic wrappers for LWJGL as well as Android (opengl es 3.0)
-An idea is to build basic clojure maps that correspond to VAO generators and very basic shaders. The main file for support is Collada as it includes basic support for meshes, scenes but further support for blender files would be nice. I should suck it up look in to implementing a java variation and simply do some java interop, rather than implement everything in clojure.
+This implementation is to grow and eventually include generic wrappers for LWJGL as well as Android (opengl es 3.0).
+
+An idea is to build basic clojure maps that correspond to VAO generators and very basic shaders. The main file for support is Collada as it includes basic support for meshes & scenes, but further support for blender files would be nice. I should suck it up look in to implementing a java variation and simply do some java interop, rather than implement everything in clojure.
 
 ## License
 
 Copyright © 2014 Chris Gill,
- -that's me
 
 Distributed under the Eclipse Public License, the same as Clojure. 
 Have fun with this code, please fork and push any updates you see fit.
